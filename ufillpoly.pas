@@ -1,253 +1,184 @@
-unit ufillpoly;
+unit ufillpoly2;
 
 interface
   uses types, math,SysUtils;
 
-{$POINTERMATH ON}
-
-  type
-  PointType = TPoint;
-
-
-procedure fillpoly(numpoints : Word; const ptable: PPoint ; PatternLine: TProc<integer,integer,integer>; viewWidth, viewHeight:integer);
+procedure fillpoly(n : integer; const points: PPoint; PatternLine: TProc<{x0}integer,{x1}integer,{y}integer>);
 
 
 implementation
+ uses Generics.Collections;
 
-
-//  TProc<integer,integer,integer>
-// Procedure PatternLine(x1, x2, y: integer);
-// begin
-// end;
-
-
-//const
-//   viewWidth = maxint;
-//   ViewHeigh = maxint;
-
-procedure fillpoly(numpoints : Word; const ptable: PPoint ; PatternLine: TProc<integer,integer,integer>; viewWidth, viewHeight:integer);
-
-{ disable range check mode }
-{$R-}
 type
-  pedge = ^tedge;
-  tedge = packed record
-    yMin, yMax, x, dX, dY, frac : Longint;
+  TSort<T> = record
+     type
+       TCompareFunction = function(const a,b : T) : integer;
+     class procedure QuickSort(Values: TArray<T>; L,R : integer; compareFunc: TCompareFunction); static;
+     class procedure Sort(Values: TArray<T>; compareFunc: TCompareFunction); static;
   end;
 
-var
-  nActive, nNextEdge : Longint;
-  p0, p1 : pointtype;
-  i, j, gap, x0, x1, y, nEdges : Longint;
-  ET : Tarray<tedge>;
-  GET, AET : Tarray<pedge>;
-  t : pedge;
-
-  LastPolygonStart : Longint;
-  Closing, PrevClosing : Boolean;
-
+class procedure TSort<T>.Sort(Values: TArray<T>; compareFunc: TCompareFunction);
 begin
-{ /********************************************************************
-  * Add entries to the global edge table.  The global edge table has a
-  * bucket for each scan line in the polygon. Each bucket contains all
-  * the edges whose yMin == yScanline.  Each bucket contains the yMax,
-  * the x coordinate at yMax, and the denominator of the slope (dX)
-*/}
-  setLength(et,   numpoints);//  getmem(et, sizeof(tedge) * numpoints);
-  setlength(get,  numpoints);// getmem(get, sizeof(pedge) * numpoints);
-  setlength(aet,  numpoints);//getmem(aet, sizeof(pedge) * numpoints);
+  QuickSort(Values, 0, length(Values)-1, compareFunc);
+end;
 
- { check for getmem success }
-
-  nEdges := 0;
-  LastPolygonStart := 0;
-  Closing := false;
-  for i := 0 to (numpoints-1) do begin
-    p0 := ptable[i];
-    if (i+1) >= numpoints then p1 := ptable[0]
-    else p1 := ptable[i+1];
-    { save the 'closing' flag for the previous edge }
-    PrevClosing := Closing;
-    { check if the current edge is 'closing'. This means that it 'closes'
-      the polygon by going back to the first point of the polygon.
-      Also, 0-length edges are never considered 'closing'. }
-    if ((p1.x <> ptable[i].x) or
-        (p1.y <> ptable[i].y)) and
-        (LastPolygonStart < i) and
-       ((p1.x = ptable[LastPolygonStart].x) and
-        (p1.y = ptable[LastPolygonStart].y)) then
-    begin
-      Closing := true;
-      LastPolygonStart := i + 2;
-    end
-    else
-      Closing := false;
-    { skip current edge if the previous edge was 'closing'. This is TP7 compatible }
-    if PrevClosing then
-      continue;
-   { draw the edges }
-{    nickysn: moved after drawing the filled area
-    Line(p0.x,p0.y,p1.x,p1.y);}
-   { ignore if this is a horizontal edge}
-    if (p0.y = p1.y) then continue;
-   { swap ptable if necessary to ensure p0 contains yMin}
-    if (p0.y > p1.y) then begin
-      p0 := p1;
-      p1 := ptable[i];
-    end;
-   { create the new edge }
-    et[nEdges].ymin := p0.y;
-    et[nEdges].ymax := p1.y;
-    et[nEdges].x := p0.x;
-    et[nEdges].dX := p1.x-p0.x;
-    et[nEdges].dy := p1.y-p0.y;
-    et[nEdges].frac := 0;
-    get[nEdges] :=  @et[nEdges];
-    inc(nEdges);
-  end;
- { sort the GET on ymin }
-  gap := 1;
-  while (gap < nEdges) do gap := 3*gap+1;
-  gap := gap div 3;
-  while (gap > 0) do begin
-    for i := gap to (nEdges-1) do begin
-      j := i - gap;
-      while (j >= 0) do begin
-        if (GET[j].ymin <= GET[j+gap].yMin) then break;
-        t := GET[j];
-        GET[j] := GET[j+gap];
-        GET[j+gap] := t;
-        dec(j, gap);
-      end;
-    end;
-    gap := gap div 3;
-  end;
-  { initialize the active edge table, and set y to first entering edge}
-  nActive := 0;
-  nNextEdge := 0;
-
-  y := GET[nNextEdge].ymin;
-  { Now process the edges using the scan line algorithm.  Active edges
-  will be added to the Active Edge Table (AET), and inactive edges will
-  be deleted.  X coordinates will be updated with incremental integer
-  arithmetic using the slope (dY / dX) of the edges. }
-  while (nNextEdge < nEdges) or (nActive <> 0) do begin
-    {Move from the ET bucket y to the AET those edges whose yMin == y
-    (entering edges) }
-    while (nNextEdge < nEdges) and (GET[nNextEdge].ymin = y) do begin
-      AET[nActive] := GET[nNextEdge];
-      inc(nActive);
-      inc(nNextEdge);
-    end;
-    { Remove from the AET those entries for which yMax == y (leaving
-    edges) }
-    i := 0;
-    while (i < nActive) do begin
-      if (AET[i].yMax = y) then begin
-        dec(nActive);
-        System.move(AET[i+1], AET[i], (nActive-i)*sizeof(pedge));
-      end else
-        inc(i);
-    end;
-
-    if (y >= 0) then begin
-    {Now sort the AET on x.  Since the list is usually quite small,
-    the sort is implemented as a simple non-recursive shell sort }
-
-    gap := 1;
-    while (gap < nActive) do gap := 3*gap+1;
-
-    gap := gap div 3;
-    while (gap > 0) do begin
-      for i := gap to (nActive-1) do begin
-        j := i - gap;
-        while (j >= 0) do begin
-          if (AET[j].x <= AET[j+gap].x) then break;
-          t := AET[j];
-          AET[j] := AET[j+gap];
-          AET[j+gap] := t;
-          dec(j, gap);
+class procedure TSort<T>.QuickSort(Values: TArray<T>; L,R : integer; compareFunc: TCompareFunction);
+var
+  I, J: Integer;
+  pivot, temp: T;
+begin
+  assert(assigned(compareFunc));
+  if L < R then
+  begin
+    repeat
+      if (R - L) = 1 then
+      begin
+        if CompareFunc(Values[L], Values[R]) > 0 then
+        begin
+          temp := Values[L];
+          Values[L] := Values[R];
+          Values[R] := temp;
         end;
+        break;
       end;
-      gap := gap div 3;
-    end;
-
-    { Fill in desired pixels values on scan line y by using pairs of x
-    coordinates from the AET }
-    i := 0;
-    while (i < (nActive - 1)) do begin
-      x0 := AET[i].x;
-      x1 := AET[i+1].x;
-      {Left edge adjustment for positive fraction.  0 is interior. }
-      if (AET[i].frac >= 0) then inc(x0);
-      {Right edge adjustment for negative fraction.  0 is exterior. }
-      if (AET[i+1].frac <= 0) then dec(x1);
-
-      x0 := max(x0, 0);
-      x1 := min(x1, viewWidth);
-      { Draw interior spans}
-      if (x1 >= x0) then begin
-        PatternLine(x0, x1, y);
-      end;
-
-      inc(i, 2);
-    end;
-
-    end;
-
-    { Update all the x coordinates.  Edges are scan converted using a
-    modified midpoint algorithm (Bresenham's algorithm reduces to the
-    midpoint algorithm for two dimensional lines) }
-    for i := 0 to (nActive-1) do begin
-      t := AET[i];
-      { update the fraction by dX}
-      inc(t.frac, t.dX);
-
-      if (t.dX < 0) then
-        while ( -(t.frac) >= t.dY) do begin
-          inc(t.frac, t.dY);
-          dec(t.x);
-        end
+      I := L;
+      J := R;
+      pivot := Values[L + (R - L) shr 1];
+      repeat
+        while CompareFunc(Values[I], pivot) < 0 do
+          Inc(I);
+        while CompareFunc(Values[J], pivot) > 0 do
+          Dec(J);
+        if I <= J then
+        begin
+          if I <> J then
+          begin
+            temp := Values[I];
+            Values[I] := Values[J];
+            Values[J] := temp;
+          end;
+          Inc(I);
+          Dec(J);
+        end;
+      until I > J;
+      if (J - L) > (R - I) then
+      begin
+        if I < R then
+          QuickSort(Values, I, R, CompareFunc);
+        R := J;
+      end
       else
-        while (t.frac >= t.dY) do begin
-          dec(t.frac, t.dY);
-          inc(t.x);
-        end;
-    end;
-    inc(y);
-    if (y >= ViewHeight) then break;
+      begin
+        if L < J then
+          QuickSort(Values, L, J, CompareFunc);
+        L := I;
+      end;
+    until L >= R;
+  end;
+end;
+
+
+type
+  TEDGE = record
+     y_min, y_max : integer;
+     m_inv, x_with_y_min : Single;
   end;
 
-  { finally, draw the edges }
-  LastPolygonStart := 0;
-  Closing := false;
-  for i := 0 to (numpoints-1) do begin
-    p0 := ptable[i];
-    if (i+1) >= numpoints then p1 := ptable[0]
-    else p1 := ptable[i+1];
-    { save the 'closing' flag for the previous edge }
-    PrevClosing := Closing;
-    { check if the current edge is 'closing'. This means that it 'closes'
-      the polygon by going back to the first point of the polygon.
-      Also, 0-length edges are never considered 'closing'. }
-    if ((p1.x <> p0.x) or
-        (p1.y <> p0.y)) and
-        (LastPolygonStart < i) and
-       ((p1.x = ptable[LastPolygonStart].x) and
-        (p1.y = ptable[LastPolygonStart].y)) then
+function edges_compare(const a,b : TEDGE) : integer;
+begin
+  result := a.y_min - b.y_min;
+end;
+
+function int_points_compare(const a,b : integer) : integer;
+begin
+  result := a - b;
+end;
+
+
+{$POINTERMATH ON}
+procedure fillpoly(n : integer; const points: PPoint; PatternLine: TProc<integer,integer,integer>);
+var
+  edges: TArray<TEDGE>;
+  edges_n:integer;
+  int_points: TArray<integer>;
+  int_points_n: integer;
+  st,en :integer;
+  mp : TDictionary<integer,integer>;
+  i,y_tmp : integer;
+  a,b : TPoint;
+  y : integer;
+  temp : TEDGE;
+  tmp:   TPoint;
+begin
+	st := High(integer);
+  en := Low(integer);
+  mp := TDictionary<integer,integer>.Create;
+  try
+    setlength(edges,n);
+    edges_n := 0;
+
+    for i := 0 to n-1 do
     begin
-      Closing := true;
-      LastPolygonStart := i + 2;
-    end
-    else
-      Closing := false;
-    { skip edge if the previous edge was 'closing'. This is TP7 compatible }
-    if PrevClosing then
-      continue;
-   { draw the edges }
-    //Line(p0.x,p0.y,p1.x,p1.y);
-  end;
+      a := points[i];
+      b := points[(i+1) mod n];
+   { ignore if this is a horizontal edge}
+      if a.y = b.y then continue;
 
+      temp.y_min := min(a.y,b.y);
+      temp.y_max := max(a.y,b.y);
+      temp.x_with_y_min := ifthen(  (a.y < b.y) , a.x,  b.x  );
+      temp.m_inv := (b.x - a.x) / (b.y - a.y);
+      st := min(st, temp.y_min);
+      en := max(en, temp.y_max);
+      mp.AddOrSetValue(temp.y_min,1);
+      edges[edges_n] := temp;
+      inc(edges_n);
+    end;
+    n := edges_n;
+    setLength(edges, n);
+    TSort<TEDGE>.Sort(edges, edges_compare);
+    for i := 0 to n-1 do
+    begin
+      if mp.TryGetValue(edges[i].y_max, y_tmp) then
+         dec( edges[i].y_max);
+    end;
+    setLength(int_points, 16);
+    for y := st to en do
+    begin
+       int_points_n := 0;
+       i := 0;
+       while i < n do
+       begin
+         if (y >= edges[i].y_min) and (y <= edges[i].y_max) then
+         begin
+            if int_points_n = length(int_points) then
+               SetLength(int_points,int_points_n+16);
+            int_points[int_points_n] := round(edges[i].x_with_y_min);
+            inc(int_points_n);
+            edges[i].x_with_y_min := edges[i].x_with_y_min + edges[i].m_inv;
+            inc(i);
+         end
+         else
+         if (y>edges[i].y_max) then
+         begin
+           dec(n);
+           move(edges[i+1],edges[i],(n-i)*sizeof(edges[i]));
+         end
+         else
+           inc(i);
+       end;
+       TSort<integer>.QuickSort(int_points,0,int_points_n-1, int_points_compare );
+       i := 0;
+       while i < int_points_n-1 do
+       begin
+         PatternLine(int_points[i], int_points[i+1], y);
+         inc(i,2);
+       end;
+    end;
+
+  finally
+    mp.free;
+  end;
 end;
 
 
